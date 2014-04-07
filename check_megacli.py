@@ -26,6 +26,21 @@ import argparse
 import subprocess
 import traceback
 
+# based on using http://hwraid.le-vert.net/wiki/DebianPackages
+MEGACLI='/usr/sbin/megacli'
+
+# RAID descriptions returned by megacli are obscure, so we'll convert
+# them into more well known descriptions thanks to
+# http://globalroot.wordpress.com/2013/06/18/megacli-raid-levels/
+RAIDDESC = {
+    'Primary-0, Secondary-0, RAID Level Qualifier-0': 'RAID-0',
+    'Primary-1, Secondary-0, RAID Level Qualifier-0': 'RAID-1',
+    'Primary-5, Secondary-0, RAID Level Qualifier-3': 'RAID-5',
+    'Primary-6, Secondary-0, RAID Level Qualifier-3': 'RAID-6',
+    'Primary-1, Secondary-3, RAID Level Qualifier-0': 'RAID-10'
+}
+
+
 class PhysicalDisk(object):
     def __init__ (self, diskID):
         self.infoID = diskID
@@ -57,6 +72,29 @@ class VirtualDisk(object):
         self.infoCachePolicyCurrent = None
         self.infoCachePolicyDisk = None
         self.state = None
+
+
+class Adapter(object):
+    def __init__ (self, infoID):
+        self.infoID = infoID
+        self.productName = None
+        self.serialNumber = None
+        self.tempROC = None
+        self.errorMemoryCorrectable = None
+        self.errorMemoryUncorrectable = None
+        self.bbuTemp = None
+        self.bbuVoltage = None
+        self.bbuCurrent = None
+        self.bbuState = None
+        self.bbuStateCharge = None
+        self.bbuStateVoltage = None
+        self.bbuStateTemp = None
+        self.bbuStateI2c = None
+        self.bbuStateReplace = None
+        self.bbuStateCapacityLow = None
+        self.bbuStateNoSpace = None
+        self.bbuStatePredictiveFailure = None
+        self.bbuStateUpgradeMicrocode = None
 
 
 def parse_args():
@@ -94,7 +132,7 @@ def convert_to_bytes(s):
     return int(num * prefix[letter])
 
 def get_pd_info(args):
-    output = run_cmd('megacli -PDList -aALL')
+    output = run_cmd(MEGACLI + ' -PDList -aALL')
     diskList = []
     diskNum = 0
     tmpData = {}
@@ -166,6 +204,7 @@ def get_pd_info(args):
 
 def check_pd_health(args):
     diskList = get_pd_info(args)
+    output_stdout_alldata(diskList)
     output = ''
     for disk in diskList:
         if disk.errorCountPFC != 0:
@@ -185,19 +224,18 @@ def check_pd_health(args):
                 disk.infoSlotNumber, disk.errorCountMedia
             )
         elif disk.errorCountOther != 0:
-            output = output + 'Disk in slot %s has %s Other Errors\n' % (
+            output += 'Disk in slot %s has %s Other Errors\n' % (
                 disk.infoSlotNumber, disk.errorCountOther
             )
         else:
-            output = output + 'Disk in slot %s is healthy\n' % disk.infoSlotNumber
+            output += 'Disk in slot %s is healthy\n' % disk.infoSlotNumber
     print output
 
 
 def get_vd_info(args):
-    output = run_cmd('megacli -LdInfo -Lall -aALL')
+    output = run_cmd(MEGACLI + ' -LdInfo -Lall -aALL')
     diskList = []
     diskNum = 0
-    tmpData = {}
     for line in output.splitlines():
 
         adapterID = re.match('Adapter ([0-9]+) -- Virtual Drive Information:',line)
@@ -212,7 +250,7 @@ def get_vd_info(args):
 
         infoRAID = re.match('RAID Level          : (.+)',line)
         if infoRAID:
-            diskList[diskNum - 1].infoRAID = infoRAID.group(1)
+            diskList[diskNum - 1].infoRAID = RAIDDESC[infoRAID.group(1)]
 
         infoSizeRAW = re.match('Size                : (.+)B',line)
         if infoSizeRAW:
@@ -242,9 +280,127 @@ def get_vd_info(args):
         if infoCachePolicyDisk:
             diskList[diskNum - 1].infoCachePolicyDisk = infoCachePolicyDisk.group(1)
 
+        state = re.match('State               : (.+)',line)
+        if state:
+            diskList[diskNum - 1].state = state.group(1)
+
+    return diskList
+
+
+def check_vd_health(args):
+    output_stdout_alldata(get_vd_info(args))
+
+
+def output_stdout_alldata(objectList):
+    for obj in objectList:
+        colwidth = max(len(key) for key in vars(obj))
+        for key in sorted(vars(obj)):
+            print key.ljust(colwidth), ':', vars(obj)[key]
+        print '---'
+
+
+def get_bbu_info(adapterObject):
+    output = run_cmd(MEGACLI + ' -AdpBbuCmd -a' + str(adapterObject.infoID))
+    for line in output.splitlines():
+
+        bbuTemp = re.match('Temperature: ([0-9]+) C',line)
+        if bbuTemp:
+            adapterObject.bbuTemp = int(bbuTemp.group(1))
+
+        bbuVoltage = re.match('Voltage: ([0-9]+) mV',line)
+        if bbuVoltage:
+            adapterObject.bbuVoltage = int(bbuVoltage.group(1))
+
+        bbuCurrent = re.match('Current: ([0-9]+) mA',line)
+        if bbuCurrent:
+            adapterObject.bbuCurrent = int(bbuCurrent.group(1))
+
+        bbuState = re.match('Battery State: (.+)',line)
+        if bbuState:
+            adapterObject.bbuState = bbuState.group(1)
+
+        bbuStateCharge = re.match('  Charging Status              : (.+)',line)
+        if bbuStateCharge:
+            adapterObject.bbuStateCharge = bbuStateCharge.group(1)
+
+        bbuStateVoltage = re.match('  Voltage                                 : (.+)',line)
+        if bbuStateVoltage:
+            adapterObject.bbuStateVoltage = bbuStateVoltage.group(1)
+
+        bbuStateTemp = re.match('  Temperature                             : (.+)',line)
+        if bbuStateTemp:
+            adapterObject.bbuStateTemp = bbuStateTemp.group(1)
+
+        bbuStateI2c = re.match('  I2c Errors Detected                     : (.+)',line)
+        if bbuStateI2c:
+            adapterObject.bbuStateI2c = bbuStateI2c.group(1)
+
+        bbuStateReplace = re.match('  Battery Replacement required            : (.+)',line)
+        if bbuStateReplace:
+            adapterObject.bbuStateReplace = bbuStateReplace.group(1)
+
+        bbuStateCapacityLow = re.match('  Remaining Capacity Low                  : (.+)',line)
+        if bbuStateCapacityLow:
+            adapterObject.bbuStateCapacityLow = bbuStateCapacityLow.group(1)
+
+        bbuStateNoSpace = re.match('  No space to cache offload               : (.+)',line)
+        if bbuStateNoSpace:
+            adapterObject.bbuStateNoSpace = bbuStateNoSpace.group(1)
+
+        bbuStatePredictiveFailure = re.match('  Pack is about to fail & should be replaced : (.+)',line)
+        if bbuStatePredictiveFailure:
+            adapterObject.bbuStatePredictiveFailure = bbuStatePredictiveFailure.group(1)
+
+        bbuStateUpgradeMicrocode = re.match('  Module microcode update required        : (.+)',line)
+        if bbuStateUpgradeMicrocode:
+            adapterObject.bbuStateUpgradeMicrocode = bbuStateUpgradeMicrocode.group(1)
+
+    return adapterObject
+
+
+def get_adapter_info(args):
+    output = run_cmd(MEGACLI + ' -AdpAllInfo -aALL')
+    adapterList = []
+    adapterNum = 0
+    for line in output.splitlines():
+
+        infoID = re.match('Adapter #([0-9]+)',line)
+        if infoID:
+            adapterNum = int(infoID.group(1))
+            adapterList.append(Adapter(adapterNum))
+            adapterList[adapterNum] = get_bbu_info(adapterList[adapterNum])
+
+        productName = re.match('Product Name    : (.+) ',line)
+        if productName:
+            adapterList[adapterNum].productName = productName.group(1)
+
+        serialNumber = re.match('Serial No       : (.+)',line)
+        if serialNumber:
+            adapterList[adapterNum].serialNumber = serialNumber.group(1)
+
+        tempROC = re.match('ROC temperature : ([0-9]+)  degree Celsius',line)
+        if tempROC:
+            adapterList[adapterNum].tempROC = tempROC.group(1)
+
+        errorMemoryCorrectable = re.match('Memory Correctable Errors   : ([0-9]+)',line)
+        if errorMemoryCorrectable:
+            adapterList[adapterNum].errorMemoryCorrectable = errorMemoryCorrectable.group(1)
+
+        errorMemoryUncorrectable = re.match('Memory Uncorrectable Errors : ([0-9]+)',line)
+        if errorMemoryUncorrectable:
+            adapterList[adapterNum].errorMemoryUncorrectable = errorMemoryUncorrectable.group(1)
+
+    return adapterList
+
+
+def check_adapter_health(args):
+    output_stdout_alldata(get_adapter_info(args))
+
 
 def run(args):
     check_pd_health(args)
+    check_vd_health(args)
+    check_adapter_health(args)
 
 if __name__ == '__main__':
     args = parse_args()
