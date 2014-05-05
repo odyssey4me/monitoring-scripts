@@ -58,15 +58,15 @@ class Adapter(object):
 
                 temp_roc = re.match('ROC temperature : ([0-9]+)  degree Celsius', line)
                 if temp_roc:
-                    self.temp_roc = temp_roc.group(1)
+                    self.temp_roc = int(temp_roc.group(1))
 
                 error_memory_correctable = re.match('Memory Correctable Errors   : ([0-9]+)', line)
                 if error_memory_correctable:
-                    self.error_memory_correctable = error_memory_correctable.group(1)
+                    self.error_memory_correctable = int(error_memory_correctable.group(1))
 
                 error_memory_uncorrectable = re.match('Memory Uncorrectable Errors : ([0-9]+)', line)
                 if error_memory_uncorrectable:
-                    self.error_memory_uncorrectable = error_memory_uncorrectable.group(1)
+                    self.error_memory_uncorrectable = int(error_memory_uncorrectable.group(1))
         except OSError:
             print 'Failed to get adapter information (%s)' % megacli_cmd
 
@@ -74,10 +74,8 @@ class Adapter(object):
         # TODO: we should not be assuming that there is only one enclosure per adapter
         megacli_cmd = MEGACLI + ' -EncInfo -a%i -NoLog' % adapter_id
         try:
-            print 'Executing %s' % megacli_cmd
             output = run_cmd(megacli_cmd)
             for line in output.splitlines():
-                print 'Checking line: %s' % line
                 enclosure_id = re.match('    Device ID                     : ([0-9]+)', line)
                 if enclosure_id:
                     self.enclosure_id = int(enclosure_id.group(1))
@@ -152,14 +150,19 @@ class Adapter(object):
             print 'Failed to get battery information (%s)' % megacli_cmd
 
     def health(self):
-        if (self.error_memory_correctable != 0 or self.error_memory_uncorrectable != 0 or
-                self.enclosure_status != 'Normal' or self.bbu_state != 'Optimal' or
-                self.bbu_state_i2c != 'No' or self.bbu_state_replace == 'Yes' or
-                self.bbu_state_no_space != 'No' or self.bbu_state_predictive_failure != 'No' or
-                self.bbu_state_upgrade_microcode != 'No'):
-            return False
+        # TODO: change health function to return all data required for outputs
+        #       - health/status output (include component error if verbosity > 0)
+        #       - error level
+        #       - performance data output (if --perfdata is specified, in a key-value dict)
+        #       - inventory output (if --inventory is specified, in a key-value dict)
+        if (self.error_memory_correctable != 0 or self.bbu_state != 'Optimal' or self.bbu_state_i2c != 'No' or
+                self.bbu_state_replace == 'Yes' or self.bbu_state_no_space != 'No' or
+                self.bbu_state_predictive_failure != 'No' or self.bbu_state_upgrade_microcode != 'No'):
+            return 1
+        elif self.enclosure_status != 'Normal' or self.error_memory_uncorrectable != 0:
+            return 2
         else:
-            return True
+            return 0
 
 
 class PhysicalDisk(object):
@@ -224,9 +227,9 @@ class PhysicalDisk(object):
     def health(self):
         if (self.error_count_media != 0 or self.error_count_other != 0 or self.error_count_pfc != 0 or
                 self.error_smart != 'No'):
-            return False
+            return 2
         else:
-            return True
+            return 0
 
 
 class VirtualDisk(object):
@@ -276,15 +279,20 @@ class VirtualDisk(object):
             print 'Failed to get virtual disk information (%s)' % megacli_cmd
 
     def health(self):
-        if self.state != 'Optimal':
-            return False
+        if self.state == 'Degraded':
+            return 1
+        elif self.state != 'Optimal':
+            return 2
         else:
-            return True
+            return 0
 
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--output', default='stdout', choices=['stdout', 'zabbix'], help='Output method')
+    ap.add_argument('-i', '--inventory', action='store_true', help='Include inventory data in output')
+    ap.add_argument('-o', '--output', default='stdout', choices=['stdout', 'nagios', 'zabbix'], help='Output format')
+    ap.add_argument('-p', '--perfdata', action='store_true', help='Include performance data in output')
+    ap.add_argument('-v', '--verbose', default=0, action='count', help='Increase output verbosity')
     return ap.parse_args()
 
 
@@ -377,30 +385,127 @@ def virtual_disk_list(adapter_id):
         return []
 
 
-def output_stdout():
+def output_stdout(verbosity):
     adapters = adapter_list()
     for adapter_id in range(0, len(adapters)):
-        print '---Adapter %i---' % adapter_id
-        object_stdout(adapters[adapter_id])
+        if verbosity > 0:
+            print '---Adapter %i---' % adapter_id
+            object_stdout(adapters[adapter_id])
+        if adapters[adapter_id].health() == 0:
+            print 'Adapter %i Health OK' % adapter_id
+        elif adapters[adapter_id].health() == 1:
+            print 'Adapter %i Health WARNING' % adapter_id
+        elif adapters[adapter_id].health() == 2:
+            print 'Adapter %i Health CRITICAL' % adapter_id
+        else:
+            print 'Adapter %i Health UNKNOWN' % adapter_id
 
         virtual_disks = virtual_disk_list(adapter_id)
         for vdisk_id in range(0, len(virtual_disks)):
-            print '---Virtual Disk %i---' % vdisk_id
-            object_stdout(virtual_disks[vdisk_id])
+            if verbosity > 0:
+                print '---Virtual Disk %i---' % vdisk_id
+                object_stdout(virtual_disks[vdisk_id])
+            if virtual_disks[vdisk_id].health() == 0:
+                print 'Virtual Disk %i Health OK' % vdisk_id
+            elif virtual_disks[vdisk_id].health() == 1:
+                print 'Virtual Disk %i Health WARNING' % vdisk_id
+            elif virtual_disks[vdisk_id].health() == 2:
+                print 'Virtual Disk %i Health CRITICAL' % vdisk_id
+            else:
+                print 'Virtual Disk %i Health UNKNOWN' % vdisk_id
 
         physical_disks = physical_disk_list(adapter_id, adapters[adapter_id].enclosure_id)
         for disk_id in range(0, len(physical_disks)):
-            print '---Physical Disk %i---' % disk_id
-            object_stdout(physical_disks[disk_id])
+            if verbosity > 0:
+                print '---Physical Disk %i---' % disk_id
+                object_stdout(physical_disks[disk_id])
+            if physical_disks[disk_id].health() == 0:
+                print 'Physical Disk %i Health OK' % disk_id
+            elif physical_disks[disk_id].health() == 1:
+                print 'Physical Disk %i Health WARNING' % disk_id
+            elif physical_disks[disk_id].health() == 2:
+                print 'Physical Disk %i Health CRITICAL' % disk_id
+            else:
+                print 'Physical Disk %i Health PROBLEM' % disk_id
+
+
+def output_nagios():
+    adapters = adapter_list()
+    output_line = ''
+    output_perfdata = ' |'
+    output_error_level = 0
+    for adapter_id in range(0, len(adapters)):
+        if adapter_id > 0:
+            output_line += '; '
+        if adapters[adapter_id].health() == 0:
+            output_line += 'Ad %i OK' % adapter_id
+        elif adapters[adapter_id].health() == 1:
+            output_line += 'Ad %i WARNING' % adapter_id
+            if output_error_level < 1:
+                output_error_level = 1
+        elif adapters[adapter_id].health() == 2:
+            output_line += 'Ad %i CRITICAL' % adapter_id
+            if output_error_level < 2:
+                output_error_level = 2
+        else:
+            output_line += 'Ad %i UNKNOWN' % adapter_id
+            if output_error_level == 0:
+                output_error_level = 3
+        output_perfdata += " 'ad_%i_bbu_temp'=%i" % (adapter_id, adapters[adapter_id].bbu_temp)
+        output_perfdata += " 'ad_%i_bbu_voltage'=%i" % (adapter_id, adapters[adapter_id].bbu_voltage)
+        output_perfdata += " 'ad_%i_temp_roc'=%i" % (adapter_id, adapters[adapter_id].temp_roc)
+
+        virtual_disks = virtual_disk_list(adapter_id)
+        for vdisk_id in range(0, len(virtual_disks)):
+            if virtual_disks[vdisk_id].health() == 0:
+                output_line += '; VD %i OK' % vdisk_id
+            elif virtual_disks[vdisk_id].health() == 1:
+                output_line += '; VD %i WARNING' % vdisk_id
+                if output_error_level < 1:
+                    output_error_level = 1
+            elif virtual_disks[vdisk_id].health() == 2:
+                output_line += '; VD %i CRITICAL' % vdisk_id
+                if output_error_level < 2:
+                    output_error_level = 2
+            else:
+                output_line += '; VD %i UNKNOWN' % vdisk_id
+                if output_error_level == 0:
+                    output_error_level = 3
+
+        physical_disks = physical_disk_list(adapter_id, adapters[adapter_id].enclosure_id)
+        for disk_id in range(0, len(physical_disks)):
+            if physical_disks[disk_id].health() == 0:
+                output_line += '; PD %i OK' % disk_id
+            elif physical_disks[disk_id].health() == 1:
+                output_line += '; PD %i WARNING' % disk_id
+                if output_error_level < 1:
+                    output_error_level = 1
+            elif physical_disks[disk_id].health() == 2:
+                output_line += '; PD %i CRITICAL' % disk_id
+                if output_error_level < 2:
+                    output_error_level = 2
+            else:
+                output_line += '; PD %i UNKNOWN' % disk_id
+                if output_error_level == 0:
+                    output_error_level = 3
+            output_perfdata += " 'pd_%i_temp'=%i" % (disk_id, physical_disks[disk_id].device_temp)
+
+    output_line += output_perfdata
+    print output_line
+    sys.exit(output_error_level)
+
 
 if __name__ == '__main__':
     args = parse_args()
 
     try:
         if args.output == 'stdout':
-            output_stdout()
+            output_stdout(args.verbose)
+        elif args.output == 'nagios':
+            output_nagios()
         elif args.output == 'zabbix':
             # TODO: the zabbix output still needs to be done
+            print 'zabbix output'
         sys.exit(0)
     except Exception, err:
         #print("ERROR: %s" % err)
