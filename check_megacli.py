@@ -154,7 +154,7 @@ class Adapter(object):
         output = {'errorlevel': 0, 'errors': []}
 
         if self.bbu_state != 'Optimal':
-            output['errors'].append('BBU is not in Optimal state.')
+            output['errors'].append('BBU status is %s.' % self.bbu_state)
             output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
 
         if self.bbu_state_i2c != 'No':
@@ -192,9 +192,6 @@ class Adapter(object):
         if self.error_memory_uncorrectable != 0:
             output['errors'].append('Memory Uncorrectable Errors found!')
             output['errorlevel'] = set_errorlevel(output['errorlevel'], 2)
-
-        if not output['errors']:
-            output['errors'].append('No errors found.')
 
         return output
 
@@ -271,11 +268,41 @@ class PhysicalDisk(object):
             print 'Failed to get physical disk information (%s)' % megacli_cmd
 
     def health(self):
-        if (self.error_count_media != 0 or self.error_count_other != 0 or self.error_count_pfc != 0 or
-                self.error_smart != 'No'):
-            return 2
-        else:
-            return 0
+        output = {'errorlevel': 0, 'errors': []}
+
+        if self.error_count_media != 0:
+            output['errors'].append('Media Errors found!')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 2)
+
+        if self.error_count_other != 0:
+            output['errors'].append('Errors found!')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 2)
+
+        if self.error_count_pfc != 0:
+            output['errors'].append('Predictive Failures found!')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 2)
+
+        if self.error_smart != 'No':
+            output['errors'].append('Drive has flagged a S.M.A.R.T alert!')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 2)
+
+        if self.state == 'Defunct':
+            output['errors'].append('Drive is Defunct!')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 2)
+
+        return output
+
+    def inventory(self):
+        # TODO: compile a list of inventory items from the object
+        return 'Inventory List'
+
+    def perfdata(self):
+        # TODO: compile a list of performance data items from the object
+        return 'Perfdata List'
+
+    def status(self):
+        # TODO: compile a list of status items from the object
+        return 'Status List'
 
 
 class VirtualDisk(object):
@@ -325,12 +352,28 @@ class VirtualDisk(object):
             print 'Failed to get virtual disk information (%s)' % megacli_cmd
 
     def health(self):
+        output = {'errorlevel': 0, 'errors': []}
+
         if self.state == 'Degraded':
-            return 1
+            output['errors'].append('Drive is Degraded.')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
         elif self.state != 'Optimal':
-            return 2
-        else:
-            return 0
+            output['errors'].append('Drive state is %s.' % self.state)
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 2)
+
+        return output
+
+    def inventory(self):
+        # TODO: compile a list of inventory items from the object
+        return 'Inventory List'
+
+    def perfdata(self):
+        # TODO: compile a list of performance data items from the object
+        return 'Perfdata List'
+
+    def status(self):
+        # TODO: compile a list of status items from the object
+        return 'Status List'
 
 
 def parse_args():
@@ -376,6 +419,18 @@ def set_errorlevel(current, target):
         return 3
     else:
         return current
+
+
+def output_status(item_name, check_type, errorlevel):
+    if errorlevel == 0:
+        return '%s %s OK' % (item_name, check_type)
+    elif errorlevel == 1:
+        return '%s %s WARNING' % (item_name, check_type)
+    elif errorlevel == 2:
+        return '%s %s CRITICAL' % (item_name, check_type)
+    else:
+        return '%s %s UNKNOWN' % (item_name, check_type)
+
 
 def object_stdout(obj):
     colwidth = max(len(key) for key in vars(obj))
@@ -444,14 +499,7 @@ def output_stdout(verbosity):
     adapters = adapter_list()
     for adapter_id in range(0, len(adapters)):
 
-        if adapters[adapter_id].health()['errorlevel'] == 0:
-            print 'Adapter %i Health OK' % adapter_id
-        elif adapters[adapter_id].health()['errorlevel'] == 1:
-            print 'Adapter %i Health WARNING' % adapter_id
-        elif adapters[adapter_id].health()['errorlevel'] == 2:
-            print 'Adapter %i Health CRITICAL' % adapter_id
-        else:
-            print 'Adapter %i Health UNKNOWN' % adapter_id
+        print output_status('Adapter %i' % adapter_id, 'Health', adapters[adapter_id].health()['errorlevel'])
 
         if verbosity > 0:
             for error in adapters[adapter_id].health()['errors']:
@@ -459,32 +507,19 @@ def output_stdout(verbosity):
 
         virtual_disks = virtual_disk_list(adapter_id)
         for vdisk_id in range(0, len(virtual_disks)):
+            print output_status('Virtual Disk %i' % vdisk_id, 'Health', virtual_disks[vdisk_id].health()['errorlevel'])
+
             if verbosity > 0:
-                print '---Virtual Disk %i---' % vdisk_id
-                object_stdout(virtual_disks[vdisk_id])
-            if virtual_disks[vdisk_id].health() == 0:
-                print 'Virtual Disk %i Health OK' % vdisk_id
-            elif virtual_disks[vdisk_id].health() == 1:
-                print 'Virtual Disk %i Health WARNING' % vdisk_id
-            elif virtual_disks[vdisk_id].health() == 2:
-                print 'Virtual Disk %i Health CRITICAL' % vdisk_id
-            else:
-                print 'Virtual Disk %i Health UNKNOWN' % vdisk_id
+                for error in virtual_disks[vdisk_id].health()['errors']:
+                    print ' - %s' % error
 
         physical_disks = physical_disk_list(adapter_id, adapters[adapter_id].enclosure_id)
         for disk_id in range(0, len(physical_disks)):
-            if verbosity > 0:
-                print '---Physical Disk %i---' % disk_id
-                object_stdout(physical_disks[disk_id])
-            if physical_disks[disk_id].health() == 0:
-                print 'Physical Disk %i Health OK' % disk_id
-            elif physical_disks[disk_id].health() == 1:
-                print 'Physical Disk %i Health WARNING' % disk_id
-            elif physical_disks[disk_id].health() == 2:
-                print 'Physical Disk %i Health CRITICAL' % disk_id
-            else:
-                print 'Physical Disk %i Health PROBLEM' % disk_id
+            print output_status('Physical Disk %i' % disk_id, 'Health', physical_disks[disk_id].health()['errorlevel'])
 
+            if verbosity > 0:
+                for error in physical_disks[disk_id].health()['errors']:
+                    print ' - %s' % error
 
 def output_nagios():
     adapters = adapter_list()
