@@ -91,6 +91,7 @@ class Adapter(object):
             print 'Failed to get enclosure information (%s)' % megacli_cmd
 
         # retrieve the battery information for the adapter
+        # TODO we should not assume that a BBU is present on the adapter
         megacli_cmd = MEGACLI + ' -AdpBbuCmd -a%i -NoLog' % adapter_id
         try:
             output = run_cmd(megacli_cmd)
@@ -150,19 +151,64 @@ class Adapter(object):
             print 'Failed to get battery information (%s)' % megacli_cmd
 
     def health(self):
-        # TODO: change health function to return all data required for outputs
-        #       - health/status output (include component error if verbosity > 0)
-        #       - error level
-        #       - performance data output (if --perfdata is specified, in a key-value dict)
-        #       - inventory output (if --inventory is specified, in a key-value dict)
-        if (self.error_memory_correctable != 0 or self.bbu_state != 'Optimal' or self.bbu_state_i2c != 'No' or
-                self.bbu_state_replace == 'Yes' or self.bbu_state_no_space != 'No' or
-                self.bbu_state_predictive_failure != 'No' or self.bbu_state_upgrade_microcode != 'No'):
-            return 1
-        elif self.enclosure_status != 'Normal' or self.error_memory_uncorrectable != 0:
-            return 2
-        else:
-            return 0
+        output = {'errorlevel': 0, 'errors': []}
+
+        if self.bbu_state != 'Optimal':
+            output['errors'].append('BBU is not in Optimal state.')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
+
+        if self.bbu_state_i2c != 'No':
+            output['errors'].append('BBU i2c Errors Detected.')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
+
+        if self.bbu_state_replace == 'Yes':
+            output['errors'].append('BBU Battery Replacement required.')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
+
+        if self.bbu_state_no_space != 'No':
+            output['errors'].append('BBU has no space to cache offload.')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
+
+        if self.bbu_state_predictive_failure != 'No':
+            output['errors'].append('BBU Pack is about to fail & should be replaced.')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
+
+        if self.bbu_state_upgrade_microcode != 'No':
+            output['errors'].append('BBU module microcode update required.')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
+
+        if self.bbu_state_capacity_low != 'No':
+            output['errors'].append('BBU remaining capacity low.')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
+
+        if self.enclosure_status != 'Normal':
+            output['errors'].append('Enclosure status is %s!' % self.enclosure_status)
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 2)
+
+        if self.error_memory_correctable != 0:
+            output['errors'].append('Memory Correctable Errors found.')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 1)
+
+        if self.error_memory_uncorrectable != 0:
+            output['errors'].append('Memory Uncorrectable Errors found!')
+            output['errorlevel'] = set_errorlevel(output['errorlevel'], 2)
+
+        if not output['errors']:
+            output['errors'].append('No errors found.')
+
+        return output
+
+    def inventory(self):
+        # TODO: compile a list of inventory items from the object
+        return 'Inventory List'
+
+    def perfdata(self):
+        # TODO: compile a list of performance data items from the object
+        return 'Perfdata List'
+
+    def status(self):
+        # TODO: compile a list of status items from the object
+        return 'Status List'
 
 
 class PhysicalDisk(object):
@@ -292,6 +338,7 @@ def parse_args():
     ap.add_argument('-i', '--inventory', action='store_true', help='Include inventory data in output')
     ap.add_argument('-o', '--output', default='stdout', choices=['stdout', 'nagios', 'zabbix'], help='Output format')
     ap.add_argument('-p', '--perfdata', action='store_true', help='Include performance data in output')
+    ap.add_argument('-s', '--status', action='store_true', help='Include non-critical status information in output')
     ap.add_argument('-v', '--verbose', default=0, action='count', help='Increase output verbosity')
     return ap.parse_args()
 
@@ -321,6 +368,14 @@ def convert_to_bytes(s):
         prefix[s] = 1 << (i+1)*10
     return int(num * prefix[letter])
 
+
+def set_errorlevel(current, target):
+    if current < target != 3:
+        return target
+    elif target == 3:
+        return 3
+    else:
+        return current
 
 def object_stdout(obj):
     colwidth = max(len(key) for key in vars(obj))
@@ -388,17 +443,19 @@ def virtual_disk_list(adapter_id):
 def output_stdout(verbosity):
     adapters = adapter_list()
     for adapter_id in range(0, len(adapters)):
-        if verbosity > 0:
-            print '---Adapter %i---' % adapter_id
-            object_stdout(adapters[adapter_id])
-        if adapters[adapter_id].health() == 0:
+
+        if adapters[adapter_id].health()['errorlevel'] == 0:
             print 'Adapter %i Health OK' % adapter_id
-        elif adapters[adapter_id].health() == 1:
+        elif adapters[adapter_id].health()['errorlevel'] == 1:
             print 'Adapter %i Health WARNING' % adapter_id
-        elif adapters[adapter_id].health() == 2:
+        elif adapters[adapter_id].health()['errorlevel'] == 2:
             print 'Adapter %i Health CRITICAL' % adapter_id
         else:
             print 'Adapter %i Health UNKNOWN' % adapter_id
+
+        if verbosity > 0:
+            for error in adapters[adapter_id].health()['errors']:
+                print ' - %s' % error
 
         virtual_disks = virtual_disk_list(adapter_id)
         for vdisk_id in range(0, len(virtual_disks)):
