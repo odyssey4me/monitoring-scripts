@@ -3,6 +3,7 @@
 #
 # Script to determine the health state and various other information
 # from a MegaRAID controller.
+# https://github.com/odyssey4me/monitoring-scripts
 #
 
 #
@@ -39,6 +40,8 @@ RAIDDESC = {
     'Primary-1, Secondary-3, RAID Level Qualifier-0': 'RAID-10'
 }
 
+# Version required for nagios
+VERSION = 'check_megacli v1.0'
 
 class Adapter(object):
     def __init__(self, adapter_id):
@@ -197,15 +200,14 @@ class Adapter(object):
 
     def inventory(self):
         # TODO: compile a list of inventory items from the object
-        return 'Inventory List'
+        return {'inv_key': 'inv_data'}
 
     def perfdata(self):
-        # TODO: compile a list of performance data items from the object
-        return 'Perfdata List'
-
-    def status(self):
-        # TODO: compile a list of status items from the object
-        return 'Status List'
+        output = {}
+        output['ad_%i_bbu_temp' % self.adapter_id] = '%i' % self.bbu_temp
+        output['ad_%i_bbu_voltage' % self.adapter_id] = '%i' % self.bbu_voltage
+        output['ad_%i_temp_roc' % self.adapter_id] = '%i' % self.temp_roc
+        return output
 
 
 class PhysicalDisk(object):
@@ -294,15 +296,12 @@ class PhysicalDisk(object):
 
     def inventory(self):
         # TODO: compile a list of inventory items from the object
-        return 'Inventory List'
+        return {'inv_key': 'inv_data'}
 
     def perfdata(self):
-        # TODO: compile a list of performance data items from the object
-        return 'Perfdata List'
-
-    def status(self):
-        # TODO: compile a list of status items from the object
-        return 'Status List'
+        output = {}
+        output['pd_%i_temp' % self.slot_number] = '%i' % self.device_temp
+        return output
 
 
 class VirtualDisk(object):
@@ -365,15 +364,10 @@ class VirtualDisk(object):
 
     def inventory(self):
         # TODO: compile a list of inventory items from the object
-        return 'Inventory List'
+        return {'inv_key': 'inv_data'}
 
     def perfdata(self):
-        # TODO: compile a list of performance data items from the object
-        return 'Perfdata List'
-
-    def status(self):
-        # TODO: compile a list of status items from the object
-        return 'Status List'
+        return {}
 
 
 def parse_args():
@@ -381,8 +375,8 @@ def parse_args():
     ap.add_argument('-i', '--inventory', action='store_true', help='Include inventory data in output')
     ap.add_argument('-o', '--output', default='stdout', choices=['stdout', 'nagios', 'zabbix'], help='Output format')
     ap.add_argument('-p', '--perfdata', action='store_true', help='Include performance data in output')
-    ap.add_argument('-s', '--status', action='store_true', help='Include non-critical status information in output')
-    ap.add_argument('-v', '--verbose', default=0, action='count', help='Increase output verbosity')
+    ap.add_argument('-v', '--verbose', default=0, action='count', help='Verbose output')
+    ap.add_argument('-V', '--version', action='store_true', help='Show script version')
     return ap.parse_args()
 
 
@@ -495,106 +489,137 @@ def virtual_disk_list(adapter_id):
         return []
 
 
-def output_stdout(verbosity):
+def output_stdout(args):
     adapters = adapter_list()
+    errorlevels = []
     for adapter_id in range(0, len(adapters)):
 
         print output_status('Adapter %i' % adapter_id, 'Health', adapters[adapter_id].health()['errorlevel'])
+        errorlevels.append(adapters[adapter_id].health()['errorlevel'])
 
-        if verbosity > 0:
+        if args.verbose > 0:
             for error in adapters[adapter_id].health()['errors']:
                 print ' - %s' % error
+
+        if args.perfdata:
+            for key, value in adapters[adapter_id].perfdata().iteritems():
+                print ' - %s = %s' % (key, value)
+
+        if args.inventory:
+            for key, value in adapters[adapter_id].inventory().iteritems():
+                print ' - %s = %s' % (key, value)
 
         virtual_disks = virtual_disk_list(adapter_id)
         for vdisk_id in range(0, len(virtual_disks)):
             print output_status('Virtual Disk %i' % vdisk_id, 'Health', virtual_disks[vdisk_id].health()['errorlevel'])
+            errorlevels.append(virtual_disks[vdisk_id].health()['errorlevel'])
 
-            if verbosity > 0:
+            if args.verbose > 0:
                 for error in virtual_disks[vdisk_id].health()['errors']:
                     print ' - %s' % error
+
+            if args.perfdata:
+                for key, value in virtual_disks[vdisk_id].perfdata().iteritems():
+                    print ' - %s = %s' % (key, value)
+
+            if args.inventory:
+                for key, value in virtual_disks[vdisk_id].inventory().iteritems():
+                    print ' - %s = %s' % (key, value)
 
         physical_disks = physical_disk_list(adapter_id, adapters[adapter_id].enclosure_id)
         for disk_id in range(0, len(physical_disks)):
             print output_status('Physical Disk %i' % disk_id, 'Health', physical_disks[disk_id].health()['errorlevel'])
+            errorlevels.append(physical_disks[disk_id].health()['errorlevel'])
 
-            if verbosity > 0:
+            if args.verbose > 0:
                 for error in physical_disks[disk_id].health()['errors']:
                     print ' - %s' % error
 
-def output_nagios():
+            if args.perfdata:
+                for key, value in physical_disks[disk_id].perfdata().iteritems():
+                    print ' - %s = %s' % (key, value)
+
+            if args.inventory:
+                for key, value in physical_disks[disk_id].inventory().iteritems():
+                    print ' - %s = %s' % (key, value)
+
+    # filter out 'unknown' errorlevels if there are any 'warning' or 'critical' errorlevels
+    if (1 in errorlevels or 2 in errorlevels) and max(errorlevels) == 3:
+        errorlevels = filter(lambda item: item != 3, errorlevels)
+
+    sys.exit(max(errorlevels))
+
+def output_nagios(args):
     adapters = adapter_list()
     output_line = ''
     output_perfdata = ' |'
-    output_error_level = 0
+    errorlevels = []
     for adapter_id in range(0, len(adapters)):
+
         if adapter_id > 0:
             output_line += '; '
-        if adapters[adapter_id].health() == 0:
-            output_line += 'Ad %i OK' % adapter_id
-        elif adapters[adapter_id].health() == 1:
-            output_line += 'Ad %i WARNING' % adapter_id
-            if output_error_level < 1:
-                output_error_level = 1
-        elif adapters[adapter_id].health() == 2:
-            output_line += 'Ad %i CRITICAL' % adapter_id
-            if output_error_level < 2:
-                output_error_level = 2
-        else:
-            output_line += 'Ad %i UNKNOWN' % adapter_id
-            if output_error_level == 0:
-                output_error_level = 3
-        output_perfdata += " 'ad_%i_bbu_temp'=%i" % (adapter_id, adapters[adapter_id].bbu_temp)
-        output_perfdata += " 'ad_%i_bbu_voltage'=%i" % (adapter_id, adapters[adapter_id].bbu_voltage)
-        output_perfdata += " 'ad_%i_temp_roc'=%i" % (adapter_id, adapters[adapter_id].temp_roc)
+
+        output_line += output_status('Adp%i' % adapter_id, 'Health',
+                                     adapters[adapter_id].health()['errorlevel'])
+        errorlevels.append(adapters[adapter_id].health()['errorlevel'])
+
+        if args.verbose > 0:
+            for error in adapters[adapter_id].health()['errors']:
+                output_line += ' %s' % error
+
+        if args.perfdata:
+            for key, value in adapters[adapter_id].perfdata().iteritems():
+                output_perfdata += " %s='%s'" % (key, value)
 
         virtual_disks = virtual_disk_list(adapter_id)
         for vdisk_id in range(0, len(virtual_disks)):
-            if virtual_disks[vdisk_id].health() == 0:
-                output_line += '; VD %i OK' % vdisk_id
-            elif virtual_disks[vdisk_id].health() == 1:
-                output_line += '; VD %i WARNING' % vdisk_id
-                if output_error_level < 1:
-                    output_error_level = 1
-            elif virtual_disks[vdisk_id].health() == 2:
-                output_line += '; VD %i CRITICAL' % vdisk_id
-                if output_error_level < 2:
-                    output_error_level = 2
-            else:
-                output_line += '; VD %i UNKNOWN' % vdisk_id
-                if output_error_level == 0:
-                    output_error_level = 3
+            output_line += output_status('; VD%i' % vdisk_id, 'Health',
+                                         virtual_disks[vdisk_id].health()['errorlevel'])
+            errorlevels.append(virtual_disks[vdisk_id].health()['errorlevel'])
+
+            if args.verbose > 0:
+                for error in virtual_disks[vdisk_id].health()['errors']:
+                    output_line += ' %s' % error
+
+            if args.perfdata:
+                for key, value in virtual_disks[vdisk_id].perfdata().iteritems():
+                    output_perfdata += " %s='%s'" % (key, value)
 
         physical_disks = physical_disk_list(adapter_id, adapters[adapter_id].enclosure_id)
         for disk_id in range(0, len(physical_disks)):
-            if physical_disks[disk_id].health() == 0:
-                output_line += '; PD %i OK' % disk_id
-            elif physical_disks[disk_id].health() == 1:
-                output_line += '; PD %i WARNING' % disk_id
-                if output_error_level < 1:
-                    output_error_level = 1
-            elif physical_disks[disk_id].health() == 2:
-                output_line += '; PD %i CRITICAL' % disk_id
-                if output_error_level < 2:
-                    output_error_level = 2
-            else:
-                output_line += '; PD %i UNKNOWN' % disk_id
-                if output_error_level == 0:
-                    output_error_level = 3
-            output_perfdata += " 'pd_%i_temp'=%i" % (disk_id, physical_disks[disk_id].device_temp)
+            output_line += output_status('; PD%i' % disk_id, 'Health', physical_disks[disk_id].health()['errorlevel'])
+            errorlevels.append(physical_disks[disk_id].health()['errorlevel'])
 
-    output_line += output_perfdata
+            if args.verbose > 0:
+                for error in physical_disks[disk_id].health()['errors']:
+                    output_line += ' %s' % error
+
+            if args.perfdata:
+                for key, value in physical_disks[disk_id].perfdata().iteritems():
+                    output_perfdata += " %s='%s'" % (key, value)
+
+    if args.perfdata:
+        output_line += output_perfdata
+
     print output_line
-    sys.exit(output_error_level)
+
+    # filter out 'unknown' errorlevels if there are any 'warning' or 'critical' errorlevels
+    if (1 in errorlevels or 2 in errorlevels) and max(errorlevels) == 3:
+        errorlevels = filter(lambda item: item != 3, errorlevels)
+
+    sys.exit(max(errorlevels))
 
 
 if __name__ == '__main__':
     args = parse_args()
 
     try:
-        if args.output == 'stdout':
-            output_stdout(args.verbose)
+        if args.version:
+            print VERSION
+        elif args.output == 'stdout':
+            output_stdout(args)
         elif args.output == 'nagios':
-            output_nagios()
+            output_nagios(args)
         elif args.output == 'zabbix':
             # TODO: the zabbix output still needs to be done
             print 'zabbix output'
