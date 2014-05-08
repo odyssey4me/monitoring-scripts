@@ -43,6 +43,7 @@ RAIDDESC = {
 # Version required for nagios
 VERSION = 'check_megacli v1.0'
 
+
 class Adapter(object):
     def __init__(self, adapter_id):
         # retrieve the adapter information
@@ -199,8 +200,10 @@ class Adapter(object):
         return output
 
     def inventory(self):
-        # TODO: compile a list of inventory items from the object
-        return {'inv_key': 'inv_data'}
+        output = {}
+        output['ad_%i_product_name' % self.adapter_id] = '%s' % self.product_name
+        output['ad_%i_serial_number' % self.adapter_id] = '%s' % self.serial_number
+        return output
 
     def perfdata(self):
         output = {}
@@ -295,8 +298,11 @@ class PhysicalDisk(object):
         return output
 
     def inventory(self):
-        # TODO: compile a list of inventory items from the object
-        return {'inv_key': 'inv_data'}
+        output = {}
+        output['pd_%i_firmware_level' % self.slot_number] = '%s' % self.firmware_level
+        output['pd_%i_device_type' % self.slot_number] = '%s' % self.device_type
+        output['pd_%i_size_raw' % self.slot_number] = '%i' % self.size_raw
+        return output
 
     def perfdata(self):
         output = {}
@@ -363,8 +369,16 @@ class VirtualDisk(object):
         return output
 
     def inventory(self):
-        # TODO: compile a list of inventory items from the object
-        return {'inv_key': 'inv_data'}
+        output = {}
+        output['vd_%i_raid_level' % self.disk_id] = '%s' % self.raid_level
+        output['vd_%i_size_raw' % self.disk_id] = '%i' % self.size_raw
+        output['vd_%i_size_sector' % self.disk_id] = '%i' % self.size_sector
+        output['vd_%i_size_strip' % self.disk_id] = '%i' % self.size_strip
+        output['vd_%i_num_drives' % self.disk_id] = '%i' % self.num_drives
+        output['vd_%i_cache_policy_default' % self.disk_id] = '%s' % self.cache_policy_default
+        output['vd_%i_cache_policy_current' % self.disk_id] = '%s' % self.cache_policy_current
+        output['vd_%i_cache_policy_disk' % self.disk_id] = '%s' % self.cache_policy_disk
+        return output
 
     def perfdata(self):
         return {}
