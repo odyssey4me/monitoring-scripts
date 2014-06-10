@@ -26,6 +26,7 @@ import socket
 import libvirt
 import argparse
 import traceback
+import jsonpickle
 import subprocess
 from xml.etree import ElementTree
 
@@ -52,6 +53,7 @@ ZABBIX_CONF = '/opt/zabbix/etc/zabbix_agentd.conf'
 # Location of the zabbix_sender binary
 # TODO: This really should either be found, or be an optional argument
 ZABBIX_SENDER = '/opt/zabbix/bin/zabbix_sender'
+
 
 class Domain(object):
     def __init__(self, vir_dom):
@@ -212,6 +214,7 @@ class Domain(object):
 
 def parse_args():
     ap = argparse.ArgumentParser()
+    ap.add_argument('-d', '--discovery', action='store_true', help='Only output discovery data')
     ap.add_argument('-i', '--inventory', action='store_true', help='Include inventory data in output')
     ap.add_argument('-o', '--output', default='stdout', choices=['stdout', 'nagios', 'zabbix'], help='Output format')
     ap.add_argument('-p', '--perfdata', action='store_true', help='Include performance data in output')
@@ -343,6 +346,111 @@ def output_zabbix(args):
     sys.exit(max(errorlevels))
 
 
+def output_zabbix_discovery(args):
+    #TODO: Sort this mess out.
+    #Using the objects was too slow - the discovery would keep failing when requested by the Zabbix Server
+    try:
+        # Connect to the local hypervisor (read only)
+        conn = libvirt.openReadOnly(None)
+
+        # Prepare the lists and dict objects
+        dom_list = []
+        return_dict = {}
+
+        # Loop through the running domains and retrieve the appropriate discovery information
+        for dom_id in conn.listDomainsID():
+            dom_dict = {}
+            vir_dom = conn.lookupByID(dom_id)
+            dom_dict['{#VIRSH_DOMAIN_UUID}'] = vir_dom.UUIDString()
+
+            if args.perfdata:
+                dom_tree = ElementTree.fromstring(vir_dom.XMLDesc(0))
+
+                #The list of device names
+                if_devices = []
+
+                #Iterate through all network interface target elements of the domain
+                for target in dom_tree.findall("devices/interface/target"):
+                    #Get the device name
+                    dev = target.get("dev")
+
+                    #If this device is already in the list, don't add it again
+                    if not dev in if_devices:
+                        if_devices.append(dev)
+
+                #Put the final device list into the domain's return dict
+                for if_num, if_dev in enumerate(if_devices):
+                    dom_dict['{#VIRSH_DOMAIN_NIC}'] = str(if_num)
+
+                #The list of device names
+                blk_devices = []
+
+                #Iterate through all network interface target elements of the domain
+                for target in dom_tree.findall("devices/disk/target"):
+                    #Get the device name
+                    dev = target.get("dev")
+
+                    #If this device is already in the list, don't add it again
+                    if not dev in blk_devices:
+                        blk_devices.append(dev)
+
+                #Put the final device list into the domain's return dict
+                for blk_dev in blk_devices:
+                    dom_dict['{#VIRSH_DOMAIN_DISK}'] = blk_dev
+
+            dom_list.append(dom_dict)
+
+        # Loop through the offline domains and retrieve the appropriate discovery information
+        for name in conn.listDefinedDomains():
+            dom_dict = {}
+            vir_dom = conn.lookupByID(dom_id)
+            dom_dict['{#VIRSH_DOMAIN_UUID}'] = vir_dom.UUIDString()
+
+            if args.perfdata:
+                dom_tree = ElementTree.fromstring(vir_dom.XMLDesc(0))
+
+                #The list of device names
+                if_devices = []
+
+                #Iterate through all network interface target elements of the domain
+                for target in dom_tree.findall("devices/interface/target"):
+                    #Get the device name
+                    dev = target.get("dev")
+
+                    #If this device is already in the list, don't add it again
+                    if not dev in if_devices:
+                        if_devices.append(dev)
+
+                #Put the final device list into the domain's return dict
+                for if_num, if_dev in enumerate(if_devices):
+                    dom_dict['{#VIRSH_DOMAIN_NIC}'] = str(if_num)
+
+                #The list of device names
+                blk_devices = []
+
+                #Iterate through all network interface target elements of the domain
+                for target in dom_tree.findall("devices/disk/target"):
+                    #Get the device name
+                    dev = target.get("dev")
+
+                    #If this device is already in the list, don't add it again
+                    if not dev in blk_devices:
+                        blk_devices.append(dev)
+
+                #Put the final device list into the domain's return dict
+                for blk_dev in blk_devices:
+                    dom_dict['{#VIRSH_DOMAIN_DISK}'] = blk_dev
+
+            dom_list.append(dom_dict)
+
+        return_dict['data'] = dom_list
+
+        # return the data encoded as json
+        print jsonpickle.encode(return_dict)
+
+    except OSError:
+        print 'Failed to get domain list'
+
 def domain_list():
     try:
         # Connect to the local hypervisor (read only)
@@ -380,8 +488,10 @@ if __name__ == '__main__':
             output_stdout(args)
         elif args.output == 'nagios':
             output_nagios(args)
-        elif args.output == 'zabbix':
+        elif args.output == 'zabbix' and not args.discovery:
             output_zabbix(args)
+        elif args.output == 'zabbix' and args.discovery:
+            output_zabbix_discovery(args)
         sys.exit(0)
     except Exception, err:
         #print("ERROR: %s" % err)
